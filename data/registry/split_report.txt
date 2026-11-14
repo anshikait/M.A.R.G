@@ -1,0 +1,17 @@
+Schemes in registry: 4972 (added from rag_schemes.json because not in list: 53)
+Schemes with at least one query: 1081
+
+split   schemes  w/ queries  queries
+train      3481         757     8407
+val         746         162     1795
+test        745         162     1798
+
+LEAKAGE CHECK (schemes whose queries sit in >1 split): 0  OK
+train languages: {'english': 5807, 'hinglish': 192, 'hindi': 189, 'bengali': 185, 'telugu': 189, 'marathi': 190, 'tamil': 189, 'urdu': 175, 'gujarati': 188, 'kannada': 185, 'odia': 183, 'malayalam': 177, 'punjabi': 187, 'assamese': 175, 'nepali': 196}
+train row types: {'standard': 6988, 'vague': 653, 'named': 603, 'offtopic': 163}
+val languages: {'english': 1219, 'hinglish': 40, 'hindi': 40, 'bengali': 39, 'telugu': 40, 'marathi': 39, 'tamil': 44, 'urdu': 47, 'gujarati': 37, 'kannada': 43, 'odia': 41, 'malayalam': 46, 'punjabi': 40, 'assamese': 46, 'nepali': 34}
+val row types: {'standard': 1478, 'named': 132, 'vague': 153, 'offtopic': 32}
+test languages: {'english': 1241, 'hinglish': 35, 'hindi': 38, 'bengali': 43, 'telugu': 38, 'marathi': 38, 'tamil': 34, 'urdu': 45, 'gujarati': 42, 'kannada': 39, 'odia': 42, 'malayalam': 43, 'punjabi': 39, 'assamese': 45, 'nepali': 36}
+test row types: {'offtopic': 33, 'standard': 1484, 'named': 140, 'vague': 141}
+
+scheme_split_v1.json content-sha256[:16] = ae21571e152abac9  (note it down; it must never change)
