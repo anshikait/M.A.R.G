@@ -14,17 +14,22 @@ def score(ret, q: pd.DataFrame, mode, state_filter="none", bm25_weight=1.0):
     mask = ret.state_masks([p.get("state") for p in q["profile"]]) if state_filter == "oracle" else None
     ranked = ret.rank_lists(q["query"].tolist(), mode, mask=mask, bm25_weight=bm25_weight)
     pos = {s: i for i, s in enumerate(ret.df["slug"])}
-    ranks = []
-    for gold, lst in zip(q["slug"], ranked):
+    slugs = ret.df["slug"].tolist()
+    ranks, anyrel, prel = [], [], []
+    for gold, rel, lst in zip(q["slug"], q["relevant"], ranked):
         order = [i for i, _ in lst]
         ranks.append(order.index(pos[gold]) + 1 if pos.get(gold) in order else 10**6)
+        top3 = {slugs[i] for i in order[:3]}; rel = set(rel) | {gold}
+        anyrel.append(bool(top3 & rel)); prel.append(len(top3 & rel) / 3)
     r = np.array(ranks)
-    return pd.DataFrame({"hit3": r <= 3, "hit10": r <= 10, "rr": np.where(r < 10**6, 1 / r, 0.0)}, index=q.index)
+    return pd.DataFrame({"hit3": r <= 3, "hit10": r <= 10, "hit20": r <= 20, "hit30": r <= 30,
+                         "rr": np.where(r < 10**6, 1 / r, 0.0), "anyrel3": anyrel, "prel3": prel}, index=q.index)
 
 
 def table(q, m, by):
     g = pd.concat([q[[by]], m], axis=1).groupby(by)
-    t = g.agg(n=("hit3", "size"), R3=("hit3", "mean"), R10=("hit10", "mean"), MRR=("rr", "mean"))
+    t = g.agg(n=("hit3", "size"), R3=("hit3", "mean"), R10=("hit10", "mean"), R30=("hit30", "mean"), MRR=("rr", "mean"),
+              anyrel3=("anyrel3", "mean"))
     return t.sort_values("n", ascending=False).round(3)
 
 
@@ -50,7 +55,7 @@ if __name__ == "__main__":
     for mode, w in runs:
         tag = mode if w is None else f"{mode}_w{w:g}"
         m = score(ret, q, mode, a.state_filter, 1.0 if w is None else w)
-        print(f"\n######## {tag}   Recall@3={m.hit3.mean():.3f}  Recall@10={m.hit10.mean():.3f}  MRR={m.rr.mean():.3f}")
+        print(f"\n######## {tag}   Recall@3={m.hit3.mean():.3f}  Recall@10={m.hit10.mean():.3f}  Recall@20={m.hit20.mean():.3f}  Recall@30={m.hit30.mean():.3f}  MRR={m.rr.mean():.3f}  | any-relevant@3={m.anyrel3.mean():.3f}  relevant-precision@3={m.prel3.mean():.3f}")
         if len(runs) > 3 and w is not None:      # weight sweep: one line each, details only for the best later
             continue
         for by in ("language", "noise", "row_type"):

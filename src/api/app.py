@@ -1,6 +1,6 @@
 """FastAPI orchestration aligned with the marg data.
   JANORA_DENSE=0 uvicorn src.api.app:app --reload        (BM25 only, no model download)
-  JANORA_DENSE=1 ...                                      (BGE-M3 + BM25 hybrid; GPU recommended)
+  JANORA_DENSE=1 JANORA_MODEL=<fine-tuned dir> ...         (tuned BGE-M3, dense-only retrieval; GPU recommended)
   JANORA_MT=nllb ...                                      (translate non-English to English first = 'pivot')
   JANORA_NATIVE=1 ...                                     (retrieve with the ORIGINAL-language query = 'native')
 POST /chat {"session_id":"u1","text":"..."}   GET /profile/{sid}   POST /reset/{sid}"""
@@ -30,7 +30,8 @@ class Pipeline:
         self.cons = all_constraints(L.load_rag_rules()) if S.RAG_RULES.exists() else {}
         self.details = L.load_details()
         self.name_idx = intent_mod.build_name_index(docs["name"])
-        self.retriever = HybridRetriever(docs, use_dense=os.getenv("JANORA_DENSE", "1") == "1")
+        self.retriever = HybridRetriever(docs, use_dense=os.getenv("JANORA_DENSE", "1") == "1",
+                                         model_name=os.getenv("JANORA_MODEL"))      # path of the fine-tuned model
         mt = NLLBBackend() if os.getenv("JANORA_MT") == "nllb" else None
         self.tr = Translator(mt, glossary=list(docs["name"]))
         self.native = os.getenv("JANORA_NATIVE") == "1"
@@ -39,7 +40,7 @@ class Pipeline:
     def link(self, slug): return S.LINK.format(slug=slug)
 
     def _candidates(self, query, profile, k=30):
-        hits = self.retriever.search(query, k=k, mode="hybrid" if self.retriever.use_dense else "bm25", state=profile.get("state"))
+        hits = self.retriever.search(query, k=k, mode="dense" if self.retriever.use_dense else "bm25")   # dense-only won the weight sweep; state is handled by the eligibility rules
         top = float(hits["score"].max()) if len(hits) else 1.0
         return [(r.slug, r.score / top) for r in hits.itertuples()]
 
