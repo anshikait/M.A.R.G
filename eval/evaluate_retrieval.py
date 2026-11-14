@@ -10,20 +10,29 @@ from src.data_prep import loaders as L
 from src.retrieval.hybrid_retriever import HybridRetriever
 
 
-def score(ret, q: pd.DataFrame, mode, state_filter="none", bm25_weight=1.0):
-    mask = ret.state_masks([p.get("state") for p in q["profile"]]) if state_filter == "oracle" else None
-    ranked = ret.rank_lists(q["query"].tolist(), mode, mask=mask, bm25_weight=bm25_weight)
-    pos = {s: i for i, s in enumerate(ret.df["slug"])}
-    slugs = ret.df["slug"].tolist()
+def metrics(orders, slugs, q: pd.DataFrame):
+    """orders: per query, a list of row indices (best first) into `slugs`.  Returns per-query hit/recall columns."""
+    pos = {s: i for i, s in enumerate(slugs)}
     ranks, anyrel, prel = [], [], []
-    for gold, rel, lst in zip(q["slug"], q["relevant"], ranked):
-        order = [i for i, _ in lst]
+    for gold, rel, order in zip(q["slug"], q["relevant"], orders):
+        order = list(order)
         ranks.append(order.index(pos[gold]) + 1 if pos.get(gold) in order else 10**6)
         top3 = {slugs[i] for i in order[:3]}; rel = set(rel) | {gold}
         anyrel.append(bool(top3 & rel)); prel.append(len(top3 & rel) / 3)
     r = np.array(ranks)
     return pd.DataFrame({"hit3": r <= 3, "hit10": r <= 10, "hit20": r <= 20, "hit30": r <= 30,
                          "rr": np.where(r < 10**6, 1 / r, 0.0), "anyrel3": anyrel, "prel3": prel}, index=q.index)
+
+
+def score(ret, q: pd.DataFrame, mode, state_filter="none", bm25_weight=1.0):
+    mask = ret.state_masks([p.get("state") for p in q["profile"]]) if state_filter == "oracle" else None
+    ranked = ret.rank_lists(q["query"].tolist(), mode, mask=mask, bm25_weight=bm25_weight)
+    return metrics([[i for i, _ in lst] for lst in ranked], ret.df["slug"].tolist(), q)
+
+
+def summary(m):
+    return (f"Recall@3={m.hit3.mean():.3f}  Recall@10={m.hit10.mean():.3f}  Recall@20={m.hit20.mean():.3f}  Recall@30={m.hit30.mean():.3f}  "
+            f"MRR={m.rr.mean():.3f}  | any-relevant@3={m.anyrel3.mean():.3f}  relevant-precision@3={m.prel3.mean():.3f}")
 
 
 def table(q, m, by):
