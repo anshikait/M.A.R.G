@@ -43,10 +43,28 @@ class HybridRetriever:
         if mask is not None: S_ = np.where(mask if mask.ndim == 2 else mask[None, :], S_, -np.inf)
         return [list(np.argsort(-row)[:pool]) for row in S_]
 
-    def rank_lists(self, queries, mode="hybrid", pool=100, rrf_k=60, mask=None):
+    def rank_lists_multi(self, queries, bm25_weights=(1.0,), pool=100, rrf_k=60, mask=None):
+        """Hybrid ranking for several BM25 weights at once (dense weight fixed at 1.0). BM25 and dense lists are computed
+        only once. Returns {weight: [[(row_idx, score), ...] per query]}. weight 0 = dense only."""
+        bm = self._bm25(queries, mask, pool); de = self._dense(queries, mask, pool)
+        out = {}
+        for w in bm25_weights:
+            per_w = []
+            for b, d in zip(bm, de):
+                fused = {}
+                for r, i in enumerate(d): fused[i] = fused.get(i, 0.0) + 1.0 / (rrf_k + r + 1)
+                if w > 0:
+                    for r, i in enumerate(b): fused[i] = fused.get(i, 0.0) + w / (rrf_k + r + 1)
+                per_w.append(sorted(fused.items(), key=lambda kv: -kv[1]))
+            out[w] = per_w
+        return out
+
+    def rank_lists(self, queries, mode="hybrid", pool=100, rrf_k=60, mask=None, bm25_weight=1.0):
+        if mode == "hybrid" and self.use_dense:
+            return self.rank_lists_multi(queries, (bm25_weight,), pool, rrf_k, mask)[bm25_weight]
         lists = []
         if mode in ("bm25", "hybrid"): lists.append(self._bm25(queries, mask, pool))
-        if mode in ("dense", "hybrid") and self.use_dense: lists.append(self._dense(queries, mask, pool))
+        if mode == "dense" and self.use_dense: lists.append(self._dense(queries, mask, pool))
         out = []
         for per_q in zip(*lists):
             fused = {}
