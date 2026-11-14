@@ -6,9 +6,10 @@
 Leak rules enforced here: only TRAIN-split queries and TRAIN-split scheme cards are used (val/test card text is never seen).
 Negatives are mined from the base model's own top results, skipping the target AND (default) every scheme the person is
 eligible for (relevant_slugs / eligible_same_category_slugs), because those are valid answers and would be false negatives.
-Memory: the 250k-row word-embedding matrix is frozen (saves ~3 GB of optimizer state; fits a T4). --grad-ckpt if still OOM.
+Memory: the 250k-row word-embedding matrix is frozen (saves ~3 GB of optimizer state; fits a T4). If still out of memory: --freeze-layers 8, then --batch 8.
 """
 import argparse, math, os, random
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # less fragmentation on small GPUs
 import numpy as np
 from configs import settings as S
 from src.data_prep import loaders as L
@@ -40,6 +41,32 @@ def duplicate_mask(q_slugs, doc_slugs):
     return [[(doc_slugs[j] == q_slugs[i]) and j != i for j in range(len(doc_slugs))] for i in range(len(q_slugs))]
 
 
+def find_backbone(model):
+    """The underlying HF encoder (has .embeddings and .encoder.layer) - location differs across sentence-transformers versions."""
+    for m in model.modules():
+        if hasattr(m, "embeddings") and hasattr(m, "encoder") and hasattr(m.encoder, "layer"):
+            return m
+    return None
+
+
+def enable_checkpointing(model):
+    bb = find_backbone(model)
+    if bb is None or not hasattr(bb, "gradient_checkpointing_enable"): return False
+    try: bb.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    except TypeError: bb.gradient_checkpointing_enable()
+    return True
+
+
+def freeze_lower(model, n_layers):
+    """Freeze all embeddings + the first n_layers encoder layers: smaller optimizer state and shorter backward pass."""
+    bb = find_backbone(model)
+    if bb is None or n_layers <= 0: return 0
+    for p in bb.embeddings.parameters(): p.requires_grad = False
+    for layer in bb.encoder.layer[:n_layers]:
+        for p in layer.parameters(): p.requires_grad = False
+    return n_layers
+
+
 def quick_val(model, docs_val, qval, k=3, bs=64):
     D = model.encode(docs_val.text.tolist(), batch_size=bs, normalize_embeddings=True)
     Q = model.encode(qval["query"].tolist(), batch_size=bs, normalize_embeddings=True)
@@ -58,7 +85,8 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-5); ap.add_argument("--max-len", type=int, default=256)
     ap.add_argument("--scale", type=float, default=20.0); ap.add_argument("--seed", type=int, default=S.SEED)
     ap.add_argument("--include-vague", action="store_true"); ap.add_argument("--keep-relevant-as-negatives", action="store_true")
-    ap.add_argument("--grad-ckpt", action="store_true")
+    ap.add_argument("--no-grad-ckpt", action="store_true", help="gradient checkpointing is ON by default")
+    ap.add_argument("--freeze-layers", type=int, default=0, help="freeze embeddings + first N layers (try 8-12 if still out of memory)")
     a = ap.parse_args()
     random.seed(a.seed); np.random.seed(a.seed); torch.manual_seed(a.seed)
     dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -79,15 +107,18 @@ def main():
 
     for n, p in model.named_parameters():
         if "word_embeddings" in n: p.requires_grad = False
-    if a.grad_ckpt: model[0].auto_model.gradient_checkpointing_enable()
+    if not a.no_grad_ckpt: print("gradient checkpointing:", "on" if enable_checkpointing(model) else "NOT available (continuing without)")
+    if a.freeze_layers: print("frozen lower layers:", freeze_lower(model, a.freeze_layers))
     params = [p for p in model.parameters() if p.requires_grad]
+    print(f"trainable parameters: {sum(p.numel() for p in params) / 1e6:.0f}M of {sum(p.numel() for p in model.parameters()) / 1e6:.0f}M")
     opt = torch.optim.AdamW(params, lr=a.lr, weight_decay=0.01)
     steps = a.epochs * math.ceil(len(qtr) / a.batch); warm = max(1, int(0.1 * steps))
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min((s + 1) / warm, max(0.0, (steps - s) / max(1, steps - warm))))
-    scaler = torch.cuda.amp.GradScaler(enabled=dev == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=dev == "cuda")
 
     def embed(texts):
-        feats = {k: v.to(dev) for k, v in model.tokenize(texts).items()}
+        prep = getattr(model, "preprocess", None) or model.tokenize     # newer sentence-transformers renamed it
+        feats = {k: (v.to(dev) if hasattr(v, "to") else v) for k, v in prep(texts).items()}   # keep non-tensor entries as-is
         return F.normalize(model(feats)["sentence_embedding"], dim=-1)
 
     best, step = -1.0, 0
